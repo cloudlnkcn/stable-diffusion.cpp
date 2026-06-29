@@ -2,7 +2,7 @@ name: CI
 
 on:
   schedule:
-    - cron: '0 3 * * *' # nightly at 03:00 UTC
+    - cron: '0 3 * * 0' # every Sunday at 03:00 UTC
   workflow_dispatch: # allows manual triggering
     inputs:
       create_release:
@@ -27,7 +27,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  resolve-upstream:
+    # Resolve the upstream latest release tag once and expose it to every
+    # downstream build job so they all check out the exact same source.
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+
+    steps:
+      - name: Resolve upstream latest release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest \
+            | jq -r '.tag_name')
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::No upstream release tag found"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved upstream release tag: ${TAG}"
+
   ubuntu-latest-cmake:
+    needs: resolve-upstream
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +64,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -102,6 +130,7 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
   ubuntu-latest-cuda:
+    needs: resolve-upstream
     runs-on: ubuntu-22.04
 
     strategy:
@@ -118,7 +147,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
-          ref: master
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -203,6 +232,7 @@ jobs:
           path: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz
 
   windows-latest-cuda:
+    needs: resolve-upstream
     runs-on: windows-2022
 
     strategy:
@@ -219,7 +249,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
-          ref: master
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Install CUDA Toolkit
         id: cuda-toolkit
@@ -293,6 +323,7 @@ jobs:
 
   ubuntu-arm64-cuda:
     # GB10 (sm_121) ARM64 Linux build
+    needs: resolve-upstream
     runs-on: ubuntu-24.04-arm
 
     strategy:
@@ -308,7 +339,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
-          ref: master
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -384,6 +415,7 @@ jobs:
           path: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
 
   windows-latest-cmake:
+    needs: resolve-upstream
     runs-on: windows-2022
 
     env:
@@ -401,6 +433,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -506,6 +539,7 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip
 
   windows-latest-rocm:
+    needs: resolve-upstream
     runs-on: windows-2022
 
     env:
@@ -520,6 +554,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Cache ROCm Installation
         id: cache-rocm
@@ -592,6 +627,7 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
 
   windows-latest-cmake-hip:
+    needs: resolve-upstream
     runs-on: windows-2022
 
     env:
@@ -607,6 +643,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -705,6 +742,7 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
 
   ubuntu-latest-rocm:
+    needs: resolve-upstream
     runs-on: ubuntu-24.04
 
     env:
@@ -728,6 +766,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -857,6 +896,7 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
 
   macos-arm64-cmake:
+    needs: resolve-upstream
     strategy:
       fail-fast: false
       matrix:
@@ -876,6 +916,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -929,6 +970,7 @@ jobs:
     runs-on: ubuntu-latest
 
     needs:
+      - resolve-upstream
       - ubuntu-latest-rocm
       - ubuntu-latest-cmake
       - ubuntu-latest-cuda
@@ -947,6 +989,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
 
       - name: Download artifacts
         id: download-artifact
@@ -956,20 +999,10 @@ jobs:
           pattern: sd-*
           merge-multiple: true
 
-      - name: Get commit count
-        id: commit_count
-        run: |
-          echo "count=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Get commit hash
-        id: commit
-        uses: prompt/actions-commit-hash@v2
-
       - name: Generate tag name
         id: tag_name
         run: |
-          TAG_NAME="${{ env.BRANCH_NAME }}-${{ steps.commit_count.outputs.count }}-${{ steps.commit.outputs.short }}"
-          echo "name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "name=${{ needs.resolve-upstream.outputs.tag }}" >> $GITHUB_OUTPUT
 
       - name: Check if tag exists
         id: check_tag
