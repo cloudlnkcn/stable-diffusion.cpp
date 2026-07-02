@@ -987,18 +987,26 @@ jobs:
         run: |
           echo "name=${{ needs.resolve-upstream.outputs.tag }}" >> $GITHUB_OUTPUT
 
-      - name: Check if tag exists
+      - name: Check if release exists
         id: check_tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           TAG_NAME="${{ steps.tag_name.outputs.name }}"
-          if git ls-remote --tags https://github.com/${{ github.repository }}.git | grep -q "refs/tags/${TAG_NAME}$"; then
-            echo "Tag ${TAG_NAME} already exists in ${{ github.repository }}. Skipping release creation."
-            echo "exists=true" >> $GITHUB_OUTPUT
+          # This repo is a fork and inherits every upstream git tag, so the tag
+          # almost always already exists even though no Release has been
+          # published for it. Gate on the existence of the GitHub Release
+          # itself (the object we actually create) instead of the tag.
+          if curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} already exists in ${{ github.repository }}. Skipping release creation."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Tag ${TAG_NAME} does not exist in ${{ github.repository }}. Proceeding with release."
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release ${TAG_NAME} does not exist in ${{ github.repository }}. Proceeding with release."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create release
