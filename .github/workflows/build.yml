@@ -16,10 +16,6 @@ on:
       # can affect the outcome of a PR run. Scope PR runs to it.
       - '.github/workflows/build.yml'
 
-env:
-  # The upstream release tag (resolved by the resolve-upstream job) drives all
-  # artifact and release naming, so no fixed branch env is needed here.
-
 permissions:
   contents: read
 
