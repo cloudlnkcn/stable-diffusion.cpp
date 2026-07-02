@@ -17,7 +17,8 @@ on:
       - '.github/workflows/build.yml'
 
 env:
-  BRANCH_NAME: master
+  # The upstream release tag (resolved by the resolve-upstream job) drives all
+  # artifact and release naming, so no fixed branch env is needed here.
 
 permissions:
   contents: read
@@ -100,11 +101,6 @@ jobs:
             -DSD_BUILD_SHARED_LIBS=ON
           cmake --build . --config Release
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Fetch system info
         id: system-info
         run: |
@@ -119,15 +115,15 @@ jobs:
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          zip -j sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip ./build/bin/*
+          zip -j sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip ./build/bin/*
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
   ubuntu-latest-cuda:
     needs: resolve-upstream
@@ -211,25 +207,20 @@ jobs:
             fi
           done
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          tar -cJf sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz -C ./build/bin .
+          tar -cJf sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz -C ./build/bin .
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz
-          path: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz
+          path: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-x64.tar.xz
 
   windows-latest-cuda:
     needs: resolve-upstream
@@ -283,11 +274,6 @@ jobs:
             -DSD_BUILD_SHARED_LIBS=ON
           cmake --build build --config Release
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
@@ -312,14 +298,14 @@ jobs:
           Get-ChildItem -Path build -Filter 'ggml*.dll' -Recurse |
             Where-Object { $_.FullName -notlike '*\bin\Release\*' } |
             ForEach-Object { Copy-Item $_.FullName .\build\bin\Release\ -Force }
-          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-windows-cuda-${{ matrix.sm }}-x64.zip .\build\bin\Release\*
+          7z a sd-${{ needs.resolve-upstream.outputs.tag }}-windows-cuda-${{ matrix.sm }}-x64.zip .\build\bin\Release\*
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-windows-cuda-${{ matrix.sm }}-x64.zip
-          path: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-windows-cuda-${{ matrix.sm }}-x64.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-windows-cuda-${{ matrix.sm }}-x64.zip
+          path: sd-${{ needs.resolve-upstream.outputs.tag }}-windows-cuda-${{ matrix.sm }}-x64.zip
 
   ubuntu-arm64-cuda:
     # GB10 (sm_121) ARM64 Linux build
@@ -394,25 +380,20 @@ jobs:
             fi
           done
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          tar -cJf sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz -C ./build/bin .
+          tar -cJf sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz -C ./build/bin .
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
-          path: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
+          path: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
 
   windows-latest-cmake:
     needs: resolve-upstream
@@ -488,11 +469,6 @@ jobs:
           & $cl /O2 /GS- /kernel avx512f.c /link /nodefaultlib /entry:main
           .\avx512f.exe && echo "AVX512F: YES" && ( echo HAS_AVX512F=1 >> $env:GITHUB_ENV ) || echo "AVX512F: NO"
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
@@ -511,7 +487,7 @@ jobs:
             ls .\build\bin
             throw "Can't find stable-diffusion.dll"
           }
-          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip $filePath
+          7z a sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-${{ matrix.build }}-x64.zip $filePath
 
       - name: Copy and pack Cuda runtime
         id: pack_cuda_runtime
@@ -534,9 +510,9 @@ jobs:
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-${{ matrix.build }}-x64.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-${{ matrix.build }}-x64.zip
 
   windows-latest-rocm:
     needs: resolve-upstream
@@ -608,23 +584,18 @@ jobs:
             -DGPU_TARGETS="${{ env.GPU_TARGETS }}"
           cmake --build . --config Release --parallel ${env:NUMBER_OF_PROCESSORS}
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
-
       - name: Pack artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         run: |
-          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip .\build\bin\*
+          7z a sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip .\build\bin\*
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
 
   windows-latest-cmake-hip:
     needs: resolve-upstream
@@ -716,11 +687,6 @@ jobs:
             -DGPU_TARGETS="${{ env.GPU_TARGETS }}"
           cmake --build . --config Release --parallel ${env:NUMBER_OF_PROCESSORS}
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         run: |
@@ -731,15 +697,15 @@ jobs:
           cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
           cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
           cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
-          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip .\build\bin\*
+          7z a sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip .\build\bin\*
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
 
   ubuntu-latest-rocm:
     needs: resolve-upstream
@@ -858,11 +824,6 @@ jobs:
             -DSD_BUILD_SHARED_LIBS=ON
           cmake --build . --config Release
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Prepare artifacts
         id: prepare_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
@@ -885,15 +846,15 @@ jobs:
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          zip -y -r sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip ./build/bin
+          zip -y -r sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip ./build/bin
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
 
   macos-arm64-cmake:
     needs: resolve-upstream
@@ -940,26 +901,21 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build . --config Release -j $(sysctl -n hw.logicalcpu)
 
-      - name: Get commit hash
-        id: commit
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
-        uses: prompt/actions-commit-hash@v2
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          zip -j sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip ./build/bin/*
+          zip -j sd-${{ needs.resolve-upstream.outputs.tag }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip ./build/bin/*
 
       - name: Upload artifacts
         if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-Darwin-arm64-metal${{ matrix.archive_suffix }}.zip
 
   release:
     if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
