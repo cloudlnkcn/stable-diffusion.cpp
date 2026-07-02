@@ -294,6 +294,7 @@ jobs:
           set sm=${{ matrix.sm }}
           set cmake_arch=%sm:sm_=%
           cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_CXX_FLAGS='/bigobj' ^
             -DSD_CUBLAS=ON ^
             -DGGML_CUDA=ON ^
             -DCMAKE_CUDA_ARCHITECTURES=%cmake_arch% ^
