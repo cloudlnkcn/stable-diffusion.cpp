@@ -5,6 +5,11 @@ on:
     - cron: '0 3 * * 0' # every Sunday at 03:00 UTC
   workflow_dispatch: # allows manual triggering
     inputs:
+      upstream_ref:
+        description: "Upstream tag or release to build, e.g. master-737-3b6c9ca. Leave empty to build the latest release."
+        required: false
+        type: string
+        default: ''
       create_release:
         description: "Create new release"
         required: true
@@ -25,30 +30,56 @@ concurrency:
 
 jobs:
   resolve-upstream:
-    # Resolve the upstream latest release tag once and expose it to every
-    # downstream build job so they all check out the exact same source.
+    # Resolve the upstream tag to build once and expose it to every downstream
+    # build job so they all check out the exact same source. When triggered
+    # manually with an explicit upstream_ref, that value is used and validated
+    # against the upstream tags; otherwise the latest release tag is used.
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
 
     steps:
-      - name: Resolve upstream latest release tag
+      - name: Resolve upstream tag
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
         run: |
           set -euo pipefail
-          TAG=$(curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest \
-            | jq -r '.tag_name')
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "::error::No upstream release tag found"
-            exit 1
+
+          # Tag/commit refs accepted by actions/checkout are normalized to a
+          # short SHA for the validation/echo messages below.
+          normalize_ref() {
+            git ls-remote --exit-code \
+              https://github.com/leejet/stable-diffusion.cpp.git \
+              "refs/tags/${1}" "refs/tags/${1}^{}" 2>/dev/null \
+              | awk '{print $1}' | head -1
+          }
+
+          if [ -n "${UPSTREAM_REF}" ]; then
+            # Explicit input: validate it resolves to an existing upstream ref.
+            SHA=$(normalize_ref "${UPSTREAM_REF}")
+            if [ -z "${SHA}" ]; then
+              echo "::error::upstream_ref '${UPSTREAM_REF}' is not an upstream tag of leejet/stable-diffusion.cpp"
+              exit 1
+            fi
+            TAG="${UPSTREAM_REF}"
+            echo "Using manually specified upstream tag: ${TAG} (${SHA})"
+          else
+            # Default: latest upstream release tag.
+            TAG=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest \
+              | jq -r '.tag_name')
+            if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+              echo "::error::No upstream release tag found"
+              exit 1
+            fi
+            echo "Using latest upstream release tag: ${TAG}"
           fi
+
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved upstream release tag: ${TAG}"
 
   ubuntu-latest-cmake:
     needs: resolve-upstream
