@@ -423,6 +423,76 @@ jobs:
           name: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
           path: sd-${{ needs.resolve-upstream.outputs.tag }}-ubuntu-cuda-${{ matrix.sm }}-arm64.tar.xz
 
+  ubuntu-latest-cmake-vulkan:
+    needs: resolve-upstream
+    runs-on: ubuntu-22.04
+
+    env:
+      VULKAN_VERSION: "1.4.328.1"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential libvulkan-dev
+
+      - name: Build
+        run: |
+          mkdir build
+          cd build
+          # Same portability concern as ubuntu-latest-cmake: pin the host CPU
+          # instruction set so the released binary runs on AVX-512-less hosts.
+          cmake .. \
+            -DGGML_NATIVE=OFF \
+            -DGGML_AVX2=ON \
+            -DGGML_FMA=ON \
+            -DGGML_F16C=ON \
+            -DGGML_VULKAN=ON \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release
+
+      - name: Fetch system info
+        id: system-info
+        run: |
+          echo "CPU_ARCH=`uname -m`" >> "$GITHUB_OUTPUT"
+          echo "OS_NAME=`lsb_release -s -i`" >> "$GITHUB_OUTPUT"
+          echo "OS_VERSION=`lsb_release -s -r`" >> "$GITHUB_OUTPUT"
+          echo "OS_TYPE=`uname -s`" >> "$GITHUB_OUTPUT"
+
+      - name: Pack artifacts
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
+        run: |
+          cp ggml/LICENSE ./build/bin/ggml.txt
+          cp LICENSE ./build/bin/stable-diffusion.cpp.txt
+          tar -cJf sd-${{ needs.resolve-upstream.outputs.tag }}-bin-vulkan-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz -C ./build/bin .
+
+      - name: Upload artifacts
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-vulkan-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz
+          path: |
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-vulkan-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz
+
   windows-latest-cmake:
     needs: resolve-upstream
     runs-on: windows-2022
@@ -435,6 +505,8 @@ jobs:
         include:
           - build: "avx2"
             defines: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "vulkan"
+            defines: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_VULKAN=ON -DSD_BUILD_SHARED_LIBS=ON"
     steps:
       - name: Clone
         uses: actions/checkout@v6
@@ -957,6 +1029,7 @@ jobs:
       - resolve-upstream
       - ubuntu-latest-rocm
       - ubuntu-latest-cmake
+      - ubuntu-latest-cmake-vulkan
       - ubuntu-latest-cuda
       - ubuntu-arm64-cuda
       - windows-latest-cmake-hip
