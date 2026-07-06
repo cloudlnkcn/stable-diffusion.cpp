@@ -452,7 +452,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential libvulkan-dev
+          sudo apt-get install build-essential libvulkan-dev glslc
 
       - name: Build
         run: |
