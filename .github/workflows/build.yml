@@ -425,7 +425,7 @@ jobs:
 
   ubuntu-latest-cmake-vulkan:
     needs: resolve-upstream
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     env:
       VULKAN_VERSION: "1.4.328.1"
