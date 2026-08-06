@@ -565,16 +565,23 @@ jobs:
       - name: Build
         run: |
           source /opt/intel/oneapi/setvars.sh --force
+          # GGML_BACKEND_DL makes the SYCL backend a separate libggml-sycl.so
+          # module under build/bin/ (so the runtime bundling/validation below,
+          # which mirror llama.cpp's SYCL job, find it). It requires ggml to be
+          # built shared: sd.cpp forces BUILD_SHARED_LIBS OFF unless
+          # SD_BUILD_SHARED_GGML_LIB=ON, so set that to keep ggml shared.
           cmake -B build -S . \
             -DSD_SYCL=ON \
             -DGGML_SYCL_F16=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
             -DCMAKE_C_COMPILER=icx \
             -DCMAKE_CXX_COMPILER=icpx \
             -DGGML_NATIVE=OFF \
             -DGGML_AVX2=ON \
             -DGGML_FMA=ON \
             -DGGML_F16C=ON \
-            -DSD_BUILD_SHARED_LIBS=ON \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release -j $(nproc)
 
