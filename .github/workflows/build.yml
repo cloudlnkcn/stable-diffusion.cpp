@@ -493,6 +493,298 @@ jobs:
           path: |
             sd-${{ needs.resolve-upstream.outputs.tag }}-bin-vulkan-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz
 
+  # Intel GPU build via the SYCL backend (oneAPI DPC++ toolchain). Mirrors the
+  # packaging discipline of the CUDA jobs (runtime libs bundled next to the
+  # binaries, $ORIGIN RPATH, ldd validation) since both ship a GPU runtime that
+  # the host's driver resolves at load time. Only Intel GPUs are targeted
+  # (none in CI), so the smoke test is limited to `--version`.
+  #
+  # Runs on Ubuntu 24.04; the artifact name carries the OS version to advertise
+  # the glibc baseline. The oneAPI toolchain (DPC++ + MKL devel + oneDNN devel)
+  # is installed from Intel's apt repo; Level Zero comes from oneapi-src GitHub
+  # release .debs. The bundled ggml submodule (leejet/ggml) uses the same
+  # SYCL backend CMake as llama.cpp, so the runtime bundling logic is shared.
+  ubuntu-latest-cmake-sycl:
+    needs: resolve-upstream
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          repository: 'leejet/stable-diffusion.cpp'
+          ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.16
+        with:
+          key: ubuntu-sycl
+          evict-old-files: 1d
+
+      - name: Dependencies (Ubuntu + Level Zero SDK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build patchelf \
+            ocl-icd-opencl-dev wget ca-certificates gnupg
+
+          # Level Zero headers/loader are NOT in the Ubuntu 24.04 archive nor
+          # the oneAPI apt repo, so install the .deb pair oneapi-src publishes
+          # on GitHub releases (optional ggml SYCL dep: direct device-memory
+          # allocation; missing it only emits a CMake WARNING).
+          lz_ver="1.28.2"; lz_u="u24.04"
+          base="https://github.com/oneapi-src/level-zero/releases/download/v${lz_ver}"
+          wget -q "${base}/level-zero_${lz_ver}%2B${lz_u}_amd64.deb" -O /tmp/level-zero.deb
+          wget -q "${base}/level-zero-devel_${lz_ver}%2B${lz_u}_amd64.deb" -O /tmp/level-zero-devel.deb
+          sudo apt-get install -y /tmp/level-zero.deb /tmp/level-zero-devel.deb
+
+      # Install the oneAPI pieces the ggml SYCL backend needs, ALL via the
+      # official Intel apt repo (single mechanism, no pinned offline URLs):
+      #   - intel-oneapi-compiler-dpcpp-cpp : DPC++ (icx/icpx) + setvars.sh
+      #   - intel-oneapi-mkl-devel         : REQUIRED — provides MKLConfig.cmake
+      #                                       + MKL::MKL_SYCL::BLAS (the backend
+      #                                       does find_package(MKL REQUIRED)).
+      #   - intel-oneapi-dnnl-devel        : oneDNN (optional; silences the
+      #                                       find_package(DNNL) warning).
+      - name: Setup Intel oneAPI (DPC++ + MKL devel + oneDNN devel)
+        run: |
+          set -eux
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget -qO - https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor \
+            | sudo tee /etc/apt/keyrings/oneapi.gpg > /dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/oneapi.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            intel-oneapi-compiler-dpcpp-cpp \
+            intel-oneapi-mkl-devel \
+            intel-oneapi-dnnl-devel
+
+      - name: Build
+        run: |
+          source /opt/intel/oneapi/setvars.sh --force
+          cmake -B build -S . \
+            -DSD_SYCL=ON \
+            -DGGML_SYCL_F16=ON \
+            -DCMAKE_C_COMPILER=icx \
+            -DCMAKE_CXX_COMPILER=icpx \
+            -DGGML_NATIVE=OFF \
+            -DGGML_AVX2=ON \
+            -DGGML_FMA=ON \
+            -DGGML_F16C=ON \
+            -DSD_BUILD_SHARED_LIBS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Gather ggml shared libraries
+        run: |
+          # Copy all ggml shared libs (libggml.so, libggml-base.so,
+          # libggml-sycl.so, etc.) from wherever cmake placed them outside
+          # build/bin/ into the distribution dir, like the CUDA jobs do.
+          find build -name 'libggml*.so*' ! -path 'build/bin/*' -exec cp -av {} build/bin/ \;
+
+      - name: Bundle SYCL runtime libraries
+        run: |
+          # Auto-discover every Intel runtime dependency via ldd instead of a
+          # hand-maintained list. After setvars.sh, ldd resolves each build/bin
+          # ELF's deps through /opt/intel/oneapi; we copy anything that resolves
+          # under there — this catches libsycl/libomp/libsvml/libintlc/libirng/
+          # libze_loader/etc. uniformly, including deps a hand-list would miss.
+          # The Intel GPU *driver* (libdrm-intel, kernel module) is NOT under
+          # oneapi and is provided by the user's system — never bundled.
+          source /opt/intel/oneapi/setvars.sh --force
+
+          # Collect the set of resolved oneapi .so paths across all bundled ELFs.
+          mapfile -t intel_libs < <(
+            for f in build/bin/*; do
+              [ -f "$f" ] && ! [ -L "$f" ] || continue
+              file "$f" | grep -q 'ELF' || continue
+              ldd "$f" 2>/dev/null | awk '/=> \//{print $3}'
+            done | sort -u | grep '^/opt/intel/oneapi' || true
+          )
+
+          if [ ${#intel_libs[@]} -eq 0 ]; then
+            echo "::error::No Intel oneAPI runtime dependencies discovered via ldd."
+            exit 1
+          fi
+
+          # Copy each resolved lib PLUS its whole soname family (symlinks) from
+          # the same dir, so the loader finds e.g. libsvml.so.5 via its NEEDED.
+          for lib in "${intel_libs[@]}"; do
+            d=$(dirname "$lib")
+            base=$(find "$d" -maxdepth 1 -name "$(basename "$lib")*" -type f | head -n1)
+            [ -n "$base" ] || continue
+            # Strip the numeric .so.N suffix to get the base name pattern.
+            stem=$(basename "$base" | sed -E 's/\.so.*$/.so/')
+            cp -aL "$d"/"$stem"* build/bin/ 2>/dev/null || true
+          done
+
+          # ldd CANNOT see three classes of indirect deps that the SYCL backend
+          # still needs at runtime — copy them explicitly (resolving symlinks).
+          # Without ANY of these the shipped binary fails silently on a real
+          # Intel GPU (SYCL throws "No device of requested type available"
+          # during backend init, the backend is skipped, --list-devices returns
+          # "(none)" and the model runs on CPU only):
+          #
+          #   - libur_adapter_*.so : the Unified Runtime adapters that
+          #     libur_loader.so dlopens at runtime to actually enumerate Intel
+          #     GPUs. No ELF NEEDED references them, so ldd never lists them.
+          #   - libumf.so* : Unified Memory Framework, a direct NEEDED of the
+          #     level-zero adapter. ldd misses it because the adapter itself is
+          #     only dlopened (so its deps are never walked during build/bin
+          #     scanning).
+          #   - libtbb*.so / libtbbbind*.so : oneAPI's oneTBB. The system
+          #     libtbb12 may satisfy ldd (no "not found"), but MKL's TBB
+          #     threading backend is built against this exact oneTBB ABI;
+          #     loading the system copy yields `undefined symbol:
+          #     ...tbb::detail::r1::get_thread_reference_vertex...` and the
+          #     SYCL backend fails to dlopen.
+          #
+          # NOTE: the level-zero adapters ship with RUNPATH '$ORIGIN/../lib'
+          # (oneAPI's two-tier layout). The Set-RPATH step below rewrites every
+          # ELF in build/bin to '$ORIGIN', which is what lets the flat package
+          # resolve libumf at runtime — keep that step or GPU enumeration breaks.
+          find /opt/intel/oneapi -name 'libur_adapter_*.so*' -exec cp -aL {} build/bin/ \;
+          find /opt/intel/oneapi -name 'libumf.so*'          -exec cp -aL {} build/bin/ \;
+          find /opt/intel/oneapi -name 'libtbb.so*'          -exec cp -aL {} build/bin/ \;
+          find /opt/intel/oneapi -name 'libtbbbind*.so*'     -exec cp -aL {} build/bin/ \;
+          # Some oneAPI installs ship debug variants (libtbbbind_*_debug.so*);
+          # they are large and never needed at runtime — drop any we just
+          # copied to keep the package lean.
+          rm -f build/bin/libtbbbind*_debug.so* build/bin/libtbbbind_*_debug.so*
+
+          echo "Bundled Intel runtime libraries:"
+          ls build/bin/lib*.so* 2>/dev/null | sort || true
+
+      - name: Set RPATH for portable distribution
+        run: |
+          # Rewrite every bundled ELF's RUNPATH to '$ORIGIN' so the flat
+          # package is self-contained. This is load-bearing for the SYCL
+          # level-zero adapters: they ship from oneAPI with RUNPATH
+          # '$ORIGIN/../lib' (oneAPI's bin/ + lib/ layout), and libumf.so is
+          # their direct NEEDED. Without this rewrite the adapter looks for
+          # libumf in <pkg>/../lib/ — which doesn't exist in our flat tarball —
+          # and SYCL device enumeration silently fails. See the Bundle step.
+          for f in build/bin/*; do
+            [ -f "$f" ] && ! [ -L "$f" ] || continue
+            if file "$f" | grep -q 'ELF'; then
+              patchelf --set-rpath '$ORIGIN' "$f"
+            fi
+          done
+
+      - name: Validate SYCL package contents
+        run: |
+          set -e
+          shopt -s nullglob
+
+          required_libs=(libggml-sycl.so libggml.so)
+          for lib in "${required_libs[@]}"; do
+            matches=(build/bin/${lib}*)
+            if [ ${#matches[@]} -eq 0 ]; then
+              echo "::error::Missing required library matching ${lib}*"
+              exit 1
+            fi
+          done
+
+          # Regression guards for the three indirect deps ldd can't discover
+          # (see the Bundle step). Without these the SYCL backend silently
+          # fails to enumerate the GPU on end-user machines:
+          #   - libur_adapter_level_zero.so : dlopened by libur_loader at
+          #     runtime; absent => "No device of requested type available".
+          #   - libumf.so : direct NEEDED of the level-zero adapter; absent =>
+          #     adapter loads but device enumeration returns 0 devices.
+          #   - libtbb.so : correct oneTBB ABI for MKL TBB threading; absent
+          #     => undefined-symbol failure loading libggml-sycl.so.
+          for lib in 'libur_adapter_level_zero.so*' 'libumf.so*' 'libtbb.so*'; do
+            matches=(build/bin/${lib})
+            if [ ${#matches[@]} -eq 0 ]; then
+              echo "::error::Missing ${lib} — SYCL backend won't see the GPU at runtime"
+              exit 1
+            fi
+          done
+
+          smoke_bin=""
+          if [ -x build/bin/sd-cli ]; then
+            smoke_bin=build/bin/sd-cli
+          elif [ -x build/bin/sd-server ]; then
+            smoke_bin=build/bin/sd-server
+          else
+            echo "::error::No sd executable found for smoke testing"
+            exit 1
+          fi
+
+          # Source oneAPI env as a safety net so the smoke test mirrors how an
+          # end user runs the binary; bundled libs + $ORIGIN rpath should make
+          # this unnecessary, but it avoids spurious loader failures if any
+          # transitive Intel dep slipped past the bundle step.
+          source /opt/intel/oneapi/setvars.sh --force >/dev/null
+
+          # The runner has no Intel GPU. Although sd-cli --version returns
+          # before auto-loading backends, defensively move libggml-sycl.so
+          # aside so the GPU-less smoke test can exercise the rest of the
+          # binary, then restore it — the SYCL backend itself is link-checked
+          # via ldd below.
+          sycl_backend=""
+          for f in build/bin/libggml-sycl.so*; do
+            [ -L "$f" ] && continue
+            sycl_backend="$f"; break
+          done
+          if [ -n "$sycl_backend" ]; then
+            mv "$sycl_backend" "$sycl_backend.disabled"
+          fi
+          "$smoke_bin" --version >/dev/null
+          # Restore the SYCL backend so it ships in the artifact.
+          [ -n "$sycl_backend" ] && mv "$sycl_backend.disabled" "$sycl_backend"
+
+          # Link check across the whole package, including the SYCL backend.
+          for f in build/bin/*; do
+            [ -f "$f" ] && ! [ -L "$f" ] || continue
+            if ! file "$f" | grep -q 'ELF'; then
+              continue
+            fi
+
+            rpath=$(patchelf --print-rpath "$f")
+            if [ "$rpath" != '$ORIGIN' ]; then
+              echo "::error::Unexpected RPATH '$rpath' for $f"
+              exit 1
+            fi
+
+            # The Intel GPU stack (Level Zero loader, OpenCL ICD) is provided by
+            # the host driver at runtime — treat those as resolved, like the
+            # CUDA/Vulkan jobs exempt host-provided GPU driver libraries.
+            missing=$(ldd "$f" | awk '/=> not found/ && $1 !~ /^(libze_loader|libOpenCL)\./ { print }')
+            if [ -n "$missing" ]; then
+              echo "::error::Unresolved runtime dependencies for $f"
+              echo "$missing"
+              exit 1
+            fi
+          done
+
+      - name: Fetch system info
+        id: system-info
+        run: |
+          echo "CPU_ARCH=`uname -m`" >> "$GITHUB_OUTPUT"
+          echo "OS_NAME=`lsb_release -s -i`" >> "$GITHUB_OUTPUT"
+          echo "OS_VERSION=`lsb_release -s -r`" >> "$GITHUB_OUTPUT"
+          echo "OS_TYPE=`uname -s`" >> "$GITHUB_OUTPUT"
+
+      - name: Pack artifacts
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
+        run: |
+          cp ggml/LICENSE ./build/bin/ggml.txt
+          cp LICENSE ./build/bin/stable-diffusion.cpp.txt
+          tar -cJf sd-${{ needs.resolve-upstream.outputs.tag }}-bin-sycl-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz -C ./build/bin .
+
+      - name: Upload artifacts
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.create_release == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-${{ needs.resolve-upstream.outputs.tag }}-bin-sycl-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz
+          path: |
+            sd-${{ needs.resolve-upstream.outputs.tag }}-bin-sycl-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.tar.xz
+
   windows-latest-cmake:
     needs: resolve-upstream
     runs-on: windows-2022
@@ -1030,6 +1322,7 @@ jobs:
       - ubuntu-latest-rocm
       - ubuntu-latest-cmake
       - ubuntu-latest-cmake-vulkan
+      - ubuntu-latest-cmake-sycl
       - ubuntu-latest-cuda
       - ubuntu-arm64-cuda
       - windows-latest-cmake-hip
