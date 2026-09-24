@@ -17,9 +17,10 @@ on:
   pull_request: # validate the release build on PRs; the release job is skipped so nothing is published
     paths:
       # The build jobs clone stable-diffusion.cpp source from upstream
-      # (leejet/stable-diffusion.cpp), so only changes to this workflow itself
-      # can affect the outcome of a PR run. Scope PR runs to it.
+      # (leejet/stable-diffusion.cpp), so only this workflow and the local
+      # patches it applies can affect the outcome of a PR run.
       - '.github/workflows/build.yml'
+      - 'patches/**'
 
 permissions:
   contents: read
@@ -93,6 +94,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -171,6 +186,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -269,6 +298,20 @@ jobs:
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
 
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+
       - name: Install CUDA Toolkit
         id: cuda-toolkit
         uses: Jimver/cuda-toolkit@v0.2.35
@@ -355,6 +398,20 @@ jobs:
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
 
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
         with:
@@ -428,6 +485,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
+      # Pinned to the exact same LunarG SDK release the Windows vulkan build
+      # uses, so both platforms compile the GLSL shaders with the same glslc
+      # against the same headers (Ubuntu's archive only carries 1.3.275).
+      # LunarG's apt repo is rolling "latest" only — no per-version pin — so
+      # the SDK comes from the versioned tarball like on Windows.
       VULKAN_VERSION: "1.4.328.1"
 
     steps:
@@ -438,6 +500,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -452,7 +528,21 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential libvulkan-dev glslc glslang-tools spirv-headers
+          sudo apt-get install build-essential
+
+      # Provides everything the ggml-vulkan build needs — Vulkan headers and
+      # loader (find_package(Vulkan)), glslc for build-time GLSL -> SPIR-V
+      # shader compilation, and the SPIRV-Headers CMake config. All three are
+      # discovered through the VULKAN_SDK env var (FindVulkan hints, and
+      # ggml-vulkan adds it to CMAKE_PREFIX_PATH for find_package(SPIRV-Headers)).
+      - name: Install Vulkan SDK
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz" \
+            "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/vulkansdk"
+          tar -xJf "$RUNNER_TEMP/vulkansdk-linux-x86_64-${VULKAN_VERSION}.tar.xz" -C "$RUNNER_TEMP/vulkansdk"
+          echo "VULKAN_SDK=$RUNNER_TEMP/vulkansdk/${VULKAN_VERSION}/x86_64" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/vulkansdk/${VULKAN_VERSION}/x86_64/bin" >> "$GITHUB_PATH"
 
       - name: Build
         run: |
@@ -516,6 +606,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -815,6 +919,20 @@ jobs:
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
 
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -931,6 +1049,20 @@ jobs:
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
 
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+
       - name: Cache ROCm Installation
         id: cache-rocm
         uses: actions/cache@v4
@@ -1014,6 +1146,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -1132,6 +1278,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -1277,6 +1437,20 @@ jobs:
           fetch-depth: 0
           repository: 'leejet/stable-diffusion.cpp'
           ref: ${{ needs.resolve-upstream.outputs.tag }}
+
+      # The checkout above replaced the workspace with the upstream repo, so
+      # this fork's patch files are not present. Bring them in via a second
+      # checkout (PR runs get the PR branch; scheduled runs get lemonade).
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          path: ci
+
+      # Deliberately NOT --check: if a future upstream release changes the
+      # patched code, this step must fail loudly instead of silently shipping
+      # binaries without the patch.
+      - name: Apply patches
+        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21

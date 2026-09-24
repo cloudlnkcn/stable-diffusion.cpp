@@ -1,0 +1,126 @@
+diff --git a/examples/server/api.md b/examples/server/api.md
+index c5cae54..e74aa47 100644
+--- a/examples/server/api.md
++++ b/examples/server/api.md
+@@ -645,6 +645,12 @@ Typical status codes:
+ 
+ Attempts to cancel an accepted job.
+ 
++- Queued jobs are removed from the queue immediately.
++- Generating jobs are interrupted at the next denoiser/decode step boundary
++  (a few seconds at most on typical hardware). Cancellation is best-effort:
++  if the generation finishes before the request lands, its result is kept and
++  the job completes normally.
++
+ Typical status codes:
+ 
+ - `200 OK`
+diff --git a/examples/server/async_jobs.cpp b/examples/server/async_jobs.cpp
+index 287955a..057c891 100644
+--- a/examples/server/async_jobs.cpp
++++ b/examples/server/async_jobs.cpp
+@@ -309,6 +309,19 @@ void async_job_worker(ServerRuntime& runtime) {
+             job             = it->second;
+             job->status     = AsyncJobStatus::Generating;
+             job->started_at = unix_timestamp_now();
++
++            // A cancel may arrive between submission and pickup. Honor it
++            // here: generate_image()/generate_video() reset the library's
++            // cancel flag on entry, which would otherwise swallow a request
++            // made before the generation call started.
++            if (job->cancel_requested) {
++                job->status        = AsyncJobStatus::Cancelled;
++                job->completed_at  = unix_timestamp_now();
++                job->error_code    = "cancelled";
++                job->error_message = "job cancelled by client";
++                purge_expired_jobs(manager);
++                continue;
++            }
+         }
+ 
+         std::vector<std::string> output_images;
+@@ -350,6 +363,18 @@ void async_job_worker(ServerRuntime& runtime) {
+                 job->result_fps             = output_fps;
+                 job->error_code.clear();
+                 job->error_message.clear();
++            } else if (job->cancel_requested) {
++                // The generation unwound because the cancel endpoint called
++                // sd_cancel_generation() (or the job was cancelled right
++                // before pickup). Report Cancelled, not Failed.
++                job->status        = AsyncJobStatus::Cancelled;
++                job->error_code    = "cancelled";
++                job->error_message = "job cancelled by client";
++                job->result_images_b64.clear();
++                job->result_media_b64.clear();
++                job->result_media_mime_type.clear();
++                job->result_frame_count = 0;
++                job->result_fps         = 0;
+             } else {
+                 job->status        = AsyncJobStatus::Failed;
+                 job->error_code    = "generation_failed";
+diff --git a/examples/server/async_jobs.h b/examples/server/async_jobs.h
+index 89997a3..ed17144 100644
+--- a/examples/server/async_jobs.h
++++ b/examples/server/async_jobs.h
+@@ -44,6 +44,10 @@ struct AsyncGenerationJob {
+     int result_fps         = 0;
+     std::string error_code;
+     std::string error_message;
++    // Latched by the cancel endpoint while the job is Generating; consulted
++    // by async_job_worker under AsyncJobManager::mutex to mark the job
++    // Cancelled instead of Failed once the generation call unwinds.
++    bool cancel_requested = false;
+ };
+ 
+ struct AsyncJobManager {
+diff --git a/examples/server/routes_sdcpp.cpp b/examples/server/routes_sdcpp.cpp
+index a1eeb77..8cb59b0 100644
+--- a/examples/server/routes_sdcpp.cpp
++++ b/examples/server/routes_sdcpp.cpp
+@@ -183,7 +183,7 @@ static json make_img_gen_features_json() {
+         {"hires", true},
+         {"cache", true},
+         {"cancel_queued", true},
+-        {"cancel_generating", false},
++        {"cancel_generating", true},
+     };
+ }
+ 
+@@ -197,7 +197,7 @@ static json make_vid_gen_features_json() {
+         {"vae_tiling", true},
+         {"cache", true},
+         {"cancel_queued", true},
+-        {"cancel_generating", false},
++        {"cancel_generating", true},
+     };
+ }
+ 
+@@ -309,7 +309,7 @@ static json make_capabilities_json(ServerRuntime& runtime) {
+     json top_level_output_formats = json::array();
+     json top_level_features       = {
+               {"cancel_queued", true},
+-              {"cancel_generating", false},
++              {"cancel_generating", true},
+     };
+     std::string current_mode = "";
+     if (supports_img) {
+@@ -592,8 +592,17 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
+         }
+ 
+         if (job.status == AsyncJobStatus::Generating) {
+-            res.status = 409;
+-            res.set_content(R"({"error":"job is currently generating and cannot be interrupted yet"})", "application/json");
++            // Interrupt the in-flight generation. sd_cancel_generation() only
++            // stores into an atomic cancel flag, so it is safe to call from
++            // this HTTP thread while async_job_worker holds sd_ctx_mutex deep
++            // inside generate_image()/generate_video(). The worker unwinds at
++            // the next denoiser/decode step boundary and marks the job
++            // Cancelled. If the generation finishes before the flag lands,
++            // its completed result is kept.
++            job.cancel_requested = true;
++            sd_cancel_generation(runtime->sd_ctx, SD_CANCEL_ALL);
++            res.status = 200;
++            res.set_content(make_async_job_json(manager, job).dump(), "application/json");
+             return;
+         }
+ 
