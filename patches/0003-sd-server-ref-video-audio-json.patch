@@ -177,7 +177,7 @@ index d0d39b7..21b7de1 100644
      std::vector<SDAudioOwner> ref_audios;
      SDImageOwner mask_image;
 diff --git a/examples/common/media_io.cpp b/examples/common/media_io.cpp
-index 54947f1..19d5c00 100644
+index c349f17..6e38570 100644
 --- a/examples/common/media_io.cpp
 +++ b/examples/common/media_io.cpp
 @@ -10,6 +10,7 @@
@@ -332,3 +332,34 @@ index b2b56ec..d80199f 100644
 +                          uint32_t& channels);
 +
  #endif  // __MEDIA_IO_H__
+diff --git a/examples/server/api.md b/examples/server/api.md
+index e2f9f7a..c572d46 100644
+--- a/examples/server/api.md
++++ b/examples/server/api.md
+@@ -1050,6 +1050,7 @@ Compared with `img_gen`, the `vid_gen` request body:
+ - `vid_gen` is a single video sequence job, so `batch_count` is not part of the request schema
+ - `ref_images`, `mask_image`, `control_image`, `control_strength`, `ip_adapter_image`, `ip_adapter_strength`, and `embed_image_metadata` are not part of the request schema
+ - `vid_gen` adds `end_image`, `control_frames`, `high_noise_sample_params`, `video_frames`, `fps`, `moe_boundary`, and `vace_strength`
++- `vid_gen` adds `ref_audios` and `ref_videos` for reference audio/video conditioning (Ref2VA); they cannot be combined with `init_image` or `end_image`
+ 
+ Example:
+ 
+@@ -1153,6 +1154,18 @@ Channel expectations:
+ - `init_image`: 3 channels
+ - `end_image`: 3 channels
+ - `control_frames[]`: 3 channels
++- `ref_videos[][].frames`: 3 channels
++
++Reference audio payloads (`ref_audios[]` and `ref_videos[].audio`) accept a
++RIFF/WAVE stream (PCM 8/16/24/32-bit or 32/64-bit float) as raw base64 or a
++`data:audio/wav;base64,...` data URL.
++
++Reference video entries (`ref_videos[]`) are objects:
++
++- `frames` (required): base64 frames in presentation order
++- `fps` (optional, default 24): frame rate of the supplied frames; sources at
++  other frame rates are resampled internally
++- `audio` (optional): RIFF/WAVE soundtrack paired with this reference video
+ 
+ Frame ordering rules:
+ 

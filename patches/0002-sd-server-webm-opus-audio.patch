@@ -59,7 +59,7 @@ index 6b1266c..7e06786 100644
  endif()
  target_compile_features(${TARGET} PUBLIC c_std_11 cxx_std_17)
 diff --git a/examples/common/media_io.cpp b/examples/common/media_io.cpp
-index ba0e8c5..54947f1 100644
+index ba0e8c5..c349f17 100644
 --- a/examples/common/media_io.cpp
 +++ b/examples/common/media_io.cpp
 @@ -34,6 +34,7 @@
@@ -117,7 +117,7 @@ index ba0e8c5..54947f1 100644
 +        return result;
 +    }
 +
-+    // Downmix anything above stereo; the audio VAE pipeline outputs mono/stereo.
++    // Sources wider than stereo use their first two channels; mono stays mono.
 +    const int out_channels = audio->channels == 1 ? 1 : 2;
 +
 +    const uint64_t in_frames = audio->sample_count;
@@ -312,3 +312,15 @@ index 302a8d6..8a1329d 100644
  endif()
  
  # due to httplib; it contains a pragma for MSVC, but other things need explicit flags
+diff --git a/examples/server/api.md b/examples/server/api.md
+index 541e260..e2f9f7a 100644
+--- a/examples/server/api.md
++++ b/examples/server/api.md
+@@ -1275,6 +1275,7 @@ Output format behavior:
+ - `webp` means animated WebP
+ - `avi` means MJPG AVI
+ - `webm` requires the server to be built with WebM support; otherwise the request returns `400`
++- `webm` muxes the generated audio as an Opus track (48 kHz stereo), which browser demuxers can play; `avi` carries PCM and `webp` drops the audio track entirely
+ 
+ ### Result Payload
+ 
