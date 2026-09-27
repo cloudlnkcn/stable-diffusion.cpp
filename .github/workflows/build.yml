@@ -107,6 +107,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
@@ -199,6 +203,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
@@ -310,6 +318,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Install CUDA Toolkit
@@ -410,6 +422,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
@@ -513,6 +529,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
@@ -619,6 +639,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
@@ -931,6 +955,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
@@ -1061,6 +1089,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Cache ROCm Installation
@@ -1159,6 +1191,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
@@ -1291,6 +1327,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
@@ -1450,6 +1490,10 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
+        # pwsh (the Windows default shell) does not expand globs for native
+        # commands, so force bash — present on all three runner OSes — and let
+        # it expand ci/patches/*.patch in lexicographic order.
+        shell: bash
         run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
