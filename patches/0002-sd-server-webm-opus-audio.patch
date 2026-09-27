@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 134719c..5c0963d 100644
+index 134719c..0b45c30 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -85,6 +85,7 @@ option(SD_WEBP                       "sd: enable WebP image I/O support" ${SD_WE
@@ -10,14 +10,16 @@ index 134719c..5c0963d 100644
  option(SD_CUDA                       "sd: cuda backend" OFF)
  option(SD_HIPBLAS                    "sd: rocm backend" OFF)
  option(SD_METAL                      "sd: metal backend" OFF)
-@@ -205,6 +206,33 @@ if(SD_WEBM)
+@@ -205,6 +206,35 @@ if(SD_WEBM)
                  INTERFACE_INCLUDE_DIRECTORIES "${WEBM_INCLUDE_DIR}")
          endif()
      endif()
 +    # WebM audio tracks are Opus-encoded so browser demuxers (which skip
 +    # A_PCM/INT/LIT tracks) play the generated audio. libopus is fetched at
 +    # configure time because patch-based builds cannot add submodules.
-+    if(NOT SD_USE_SYSTEM_OPUS)
++    # Only the example binaries (cli/server) link Opus, so skip the
++    # dependency entirely for library-only builds.
++    if(SD_BUILD_EXAMPLES AND NOT SD_USE_SYSTEM_OPUS)
 +        include(FetchContent)
 +        set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
 +        set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)

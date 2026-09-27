@@ -1,8 +1,8 @@
 diff --git a/examples/common/common.cpp b/examples/common/common.cpp
-index dc15b4e..8e8cee6 100644
+index dc15b4e..940cb28 100644
 --- a/examples/common/common.cpp
 +++ b/examples/common/common.cpp
-@@ -1922,6 +1922,121 @@ static bool parse_image_array_json_field(const json& parent,
+@@ -1922,6 +1922,124 @@ static bool parse_image_array_json_field(const json& parent,
      return true;
  }
  
@@ -111,7 +111,10 @@ index dc15b4e..8e8cee6 100644
 +        out_fps.push_back(fps);
 +
 +        SDAudioOwner audio;
-+        if (item.contains("audio") && item.at("audio").is_string()) {
++        if (item.contains("audio")) {
++            if (!item.at("audio").is_string()) {
++                return false;
++            }
 +            if (!decode_base64_audio(item.at("audio").get<std::string>(), audio)) {
 +                return false;
 +            }
@@ -124,7 +127,7 @@ index dc15b4e..8e8cee6 100644
  static bool parse_lora_json_field(const json& parent,
                                    const std::function<std::string(const std::string&)>& lora_path_resolver,
                                    std::map<std::string, float>& lora_map,
-@@ -2267,6 +2382,11 @@ bool SDGenerationParams::from_json_str(
+@@ -2267,6 +2385,11 @@ bool SDGenerationParams::from_json_str(
          LOG_ERROR("invalid input image array");
          return false;
      }
@@ -136,19 +139,20 @@ index dc15b4e..8e8cee6 100644
  
      return true;
  }
-@@ -2508,6 +2628,11 @@ bool SDGenerationParams::resolve(const std::string& lora_model_dir, const std::s
+@@ -2508,6 +2631,12 @@ bool SDGenerationParams::resolve(const std::string& lora_model_dir, const std::s
  }
  
  bool SDGenerationParams::validate(SDMode mode) {
 +    if (mode == VID_GEN && (!ref_audios.empty() || !ref_videos.empty()) &&
-+        (init_image.get().data != nullptr || end_image.get().data != nullptr)) {
++        (init_image.get().data != nullptr || end_image.get().data != nullptr ||
++         !init_image_path.empty() || !end_image_path.empty())) {
 +        LOG_ERROR("error: ref_videos/ref_audios cannot be combined with init_image/end_image");
 +        return false;
 +    }
      if (!image_preprocess.empty() && mode != IMG_GEN && mode != VID_GEN) {
          LOG_ERROR("--image-preprocess requires img_gen or vid_gen mode");
          return false;
-@@ -2774,9 +2899,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+@@ -2774,9 +2903,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
              frame_views.push_back(frame.get());
          }
          sd_audio_t audio = i < ref_video_audios.size() ? ref_video_audios[i].get() : sd_audio_t{};
