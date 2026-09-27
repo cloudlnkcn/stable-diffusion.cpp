@@ -1,0 +1,312 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 134719c..5c0963d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -85,6 +85,7 @@ option(SD_WEBP                       "sd: enable WebP image I/O support" ${SD_WE
+ option(SD_USE_SYSTEM_WEBP            "sd: link against system libwebp" OFF)
+ option(SD_WEBM                       "sd: enable WebM video output support" ${SD_WEBM_DEFAULT})
+ option(SD_USE_SYSTEM_WEBM            "sd: link against system libwebm" OFF)
++option(SD_USE_SYSTEM_OPUS            "sd: link against system libopus (otherwise fetched at configure time)" OFF)
+ option(SD_CUDA                       "sd: cuda backend" OFF)
+ option(SD_HIPBLAS                    "sd: rocm backend" OFF)
+ option(SD_METAL                      "sd: metal backend" OFF)
+@@ -205,6 +206,33 @@ if(SD_WEBM)
+                 INTERFACE_INCLUDE_DIRECTORIES "${WEBM_INCLUDE_DIR}")
+         endif()
+     endif()
++    # WebM audio tracks are Opus-encoded so browser demuxers (which skip
++    # A_PCM/INT/LIT tracks) play the generated audio. libopus is fetched at
++    # configure time because patch-based builds cannot add submodules.
++    if(NOT SD_USE_SYSTEM_OPUS)
++        include(FetchContent)
++        set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
++        set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
++        set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
++        set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
++        FetchContent_Declare(opus
++            GIT_REPOSITORY https://github.com/xiph/opus.git
++            GIT_TAG        v1.5.2
++        )
++        FetchContent_MakeAvailable(opus)
++    else()
++        find_path(OPUS_INCLUDE_DIR
++            NAMES opus.h opus/opus.h
++            PATH_SUFFIXES opus
++            REQUIRED)
++        find_library(OPUS_LIBRARY
++            NAMES opus
++            REQUIRED)
++        add_library(opus UNKNOWN IMPORTED)
++        set_target_properties(opus PROPERTIES
++            IMPORTED_LOCATION "${OPUS_LIBRARY}"
++            INTERFACE_INCLUDE_DIRECTORIES "${OPUS_INCLUDE_DIR}")
++    endif()
+ endif()
+ 
+ if (SD_RPC)
+diff --git a/examples/cli/CMakeLists.txt b/examples/cli/CMakeLists.txt
+index 6b1266c..7e06786 100644
+--- a/examples/cli/CMakeLists.txt
++++ b/examples/cli/CMakeLists.txt
+@@ -22,6 +22,6 @@ if(SD_WEBP)
+ endif()
+ if(SD_WEBM)
+     target_compile_definitions(${TARGET} PRIVATE SD_USE_WEBM)
+-    target_link_libraries(${TARGET} PRIVATE webm)
++    target_link_libraries(${TARGET} PRIVATE webm opus)
+ endif()
+ target_compile_features(${TARGET} PUBLIC c_std_11 cxx_std_17)
+diff --git a/examples/common/media_io.cpp b/examples/common/media_io.cpp
+index ba0e8c5..54947f1 100644
+--- a/examples/common/media_io.cpp
++++ b/examples/common/media_io.cpp
+@@ -34,6 +34,7 @@
+ #ifdef SD_USE_WEBM
+ #include "mkvmuxer/mkvmuxer.h"
+ #include "mkvmuxer/mkvwriter.h"
++#include <opus.h>
+ #endif
+ 
+ namespace fs = std::filesystem;
+@@ -701,18 +702,6 @@ static std::vector<uint8_t> audio_to_pcm16_bytes(const sd_audio_t* audio) {
+     return bytes;
+ }
+ 
+-static std::pair<uint64_t, uint64_t> audio_sample_range_for_video_frame(const sd_audio_t* audio, int frame_idx, int num_frames, int fps) {
+-    if (audio == nullptr || fps <= 0 || num_frames <= 0) {
+-        return {0, 0};
+-    }
+-    const uint64_t total = audio->sample_count;
+-    const uint64_t start = static_cast<uint64_t>((static_cast<long double>(frame_idx) * total) / num_frames);
+-    const uint64_t end   = frame_idx + 1 == num_frames
+-                               ? total
+-                               : static_cast<uint64_t>((static_cast<long double>(frame_idx + 1) * total) / num_frames);
+-    return {start, std::max(start, end)};
+-}
+-
+ EncodedImageFormat encoded_image_format_from_path(const std::string& path) {
+     std::string ext = fs::path(path).extension().string();
+     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+@@ -1207,6 +1196,127 @@ int create_animated_webp_from_sd_images(const char* filename, sd_image_t* images
+ #endif
+ 
+ #ifdef SD_USE_WEBM
++namespace {
++// WebM demuxers in browsers (Chromium, WebKit) only decode Opus/Vorbis audio
++// tracks and silently drop A_PCM/INT/LIT, so a PCM-encoded video plays muted
++// in browser-based players. Encode the generated audio to Opus instead. The
++// Opus API only accepts 48 kHz (or lower) input, so the source audio is
++// resampled with a 4-point Catmull-Rom cubic interpolator first.
++
++constexpr int kOpusSampleRate    = 48000;
++constexpr int kOpusFrameSize     = 960;       // 20 ms at 48 kHz
++constexpr uint64_t kOpusFrameNs  = 20000000;  // 20 ms in nanoseconds
++
++struct OpusAudioData {
++    std::vector<std::vector<uint8_t>> packets;  // 20 ms Opus packets at 48 kHz
++    int pre_skip_ns = 0;                        // encoder lookahead, nanoseconds
++    int channels    = 0;
++};
++
++OpusAudioData encode_audio_to_opus_packets(const sd_audio_t* audio) {
++    OpusAudioData result;
++    if (audio == nullptr || audio->data == nullptr || audio->sample_count == 0
++            || audio->sample_rate <= 0 || audio->channels <= 0) {
++        return result;
++    }
++
++    // Downmix anything above stereo; the audio VAE pipeline outputs mono/stereo.
++    const int out_channels = audio->channels == 1 ? 1 : 2;
++
++    const uint64_t in_frames = audio->sample_count;
++
++    // Pre-downmix to out_channels so the resampler reads a compact buffer.
++    std::vector<float> src(static_cast<size_t>(in_frames) * out_channels);
++    for (uint64_t i = 0; i < in_frames; ++i) {
++        const float* in = audio->data + i * audio->channels;
++        if (out_channels == 1) {
++            float sum = 0.0f;
++            for (int ch = 0; ch < audio->channels; ++ch) sum += in[ch];
++            src[i] = sum / audio->channels;
++        } else {
++            src[i * 2 + 0] = in[0];
++            src[i * 2 + 1] = in[1];
++        }
++    }
++
++    int err = OPUS_OK;
++    OpusEncoder* encoder = opus_encoder_create(kOpusSampleRate, out_channels, OPUS_APPLICATION_AUDIO, &err);
++    if (encoder == nullptr || err != OPUS_OK) {
++        fprintf(stderr, "Error: Failed to create Opus encoder (%d).\n", err);
++        return result;
++    }
++    opus_encoder_ctl(encoder, OPUS_SET_BITRATE(out_channels == 2 ? 128000 : 64000));
++
++    opus_int32 lookahead = 0;
++    opus_encoder_ctl(encoder, OPUS_GET_LOOKAHEAD(&lookahead));
++    result.pre_skip_ns = static_cast<int>(lookahead) * 1000000000ll / kOpusSampleRate;
++    result.channels    = out_channels;
++
++    // Resample to 48 kHz interleaved float frames.
++    const uint64_t out_frames = static_cast<uint64_t>(static_cast<double>(in_frames - 1) * kOpusSampleRate / audio->sample_rate);
++    std::vector<float> resampled(static_cast<size_t>(out_frames) * out_channels);
++    const double step = static_cast<double>(audio->sample_rate) / kOpusSampleRate;
++    for (uint64_t i = 0; i < out_frames; ++i) {
++        const double src_pos   = i * step;
++        const uint64_t src_idx = static_cast<uint64_t>(src_pos);
++        const float frac       = static_cast<float>(src_pos - src_idx);
++        for (int ch = 0; ch < out_channels; ++ch) {
++            // Catmull-Rom needs one sample on either side; clamp at the edges.
++            const uint64_t i1 = src_idx;
++            const uint64_t i0 = i1 > 0 ? i1 - 1 : 0;
++            const uint64_t i2 = i1 + 1 < in_frames ? i1 + 1 : in_frames - 1;
++            const uint64_t i3 = i1 + 2 < in_frames ? i1 + 2 : in_frames - 1;
++            const float s0 = src[i0 * out_channels + ch];
++            const float s1 = src[i1 * out_channels + ch];
++            const float s2 = src[i2 * out_channels + ch];
++            const float s3 = src[i3 * out_channels + ch];
++            const float a  = -0.5f * s0 + 1.5f * s1 - 1.5f * s2 + 0.5f * s3;
++            const float b  = s0 - 2.5f * s1 + 2.0f * s2 - 0.5f * s3;
++            const float c  = -0.5f * s0 + 0.5f * s2;
++            resampled[i * out_channels + ch] = std::clamp(((a * frac + b) * frac + c) * frac + s1, -1.0f, 1.0f);
++        }
++    }
++
++    for (uint64_t offset = 0; offset + kOpusFrameSize <= out_frames; offset += kOpusFrameSize) {
++        std::vector<uint8_t> packet(4000);  // upper bound for one Opus packet
++        const opus_int32 nbytes = opus_encode_float(encoder,
++                                                     resampled.data() + offset * out_channels,
++                                                     kOpusFrameSize,
++                                                     packet.data(),
++                                                     static_cast<opus_int32>(packet.size()));
++        if (nbytes < 0) {
++            fprintf(stderr, "Error: Opus encoding failed (%d).\n", nbytes);
++            opus_encoder_destroy(encoder);
++            result.packets.clear();
++            return result;
++        }
++        packet.resize(static_cast<size_t>(nbytes));
++        result.packets.push_back(std::move(packet));
++    }
++
++    opus_encoder_destroy(encoder);
++    return result;
++}
++
++// RFC 7845 section 5.1 OpusHead packet, used as the Matroska CodecPrivate.
++std::vector<uint8_t> build_opus_head(int channels, int pre_skip_ns) {
++    std::vector<uint8_t> head(19, 0);
++    memcpy(head.data(), "OpusHead", 8);
++    head[8] = 1;  // version
++    head[9] = static_cast<uint8_t>(channels);
++    const uint16_t pre_skip_48k = static_cast<uint16_t>(
++        static_cast<int64_t>(pre_skip_ns) * kOpusSampleRate / 1000000000ll);
++    head[10] = static_cast<uint8_t>(pre_skip_48k & 0xFF);
++    head[11] = static_cast<uint8_t>((pre_skip_48k >> 8) & 0xFF);
++    head[12] = static_cast<uint8_t>(kOpusSampleRate & 0xFF);
++    head[13] = static_cast<uint8_t>((kOpusSampleRate >> 8) & 0xFF);
++    head[14] = static_cast<uint8_t>((kOpusSampleRate >> 16) & 0xFF);
++    head[15] = static_cast<uint8_t>((kOpusSampleRate >> 24) & 0xFF);
++    // output gain (2 bytes) and channel mapping family (1 byte) stay zero
++    return head;
++}
++}  // namespace
++
+ std::vector<uint8_t> create_webm_from_sd_images_to_vector(sd_image_t* images, int num_images, int fps, int quality, const sd_audio_t* audio, const std::string& parameters) {
+     if (num_images == 0) {
+         fprintf(stderr, "Error: Image array is empty.\n");
+@@ -1253,10 +1363,14 @@ std::vector<uint8_t> create_webm_from_sd_images_to_vector(sd_image_t* images, in
+             video_track->set_frame_rate(static_cast<double>(fps));
+         }
+ 
+-        uint64_t audio_track_number    = 0;
+-        std::vector<uint8_t> audio_pcm = audio_to_pcm16_bytes(audio);
+-        if (audio != nullptr && !audio_pcm.empty()) {
+-            audio_track_number = segment.AddAudioTrack(static_cast<int32_t>(audio->sample_rate), static_cast<int32_t>(audio->channels), 0);
++        uint64_t audio_track_number = 0;
++        OpusAudioData opus_audio;
++        if (audio != nullptr && audio->data != nullptr && audio->sample_count > 0
++                && audio->channels > 0 && audio->sample_rate > 0) {
++            opus_audio = encode_audio_to_opus_packets(audio);
++        }
++        if (!opus_audio.packets.empty()) {
++            audio_track_number = segment.AddAudioTrack(kOpusSampleRate, opus_audio.channels, 0);
+             if (audio_track_number == 0) {
+                 fprintf(stderr, "Error: Failed to add audio track.\n");
+                 return -1;
+@@ -1266,10 +1380,17 @@ std::vector<uint8_t> create_webm_from_sd_images_to_vector(sd_image_t* images, in
+                 fprintf(stderr, "Error: Failed to get audio track.\n");
+                 return -1;
+             }
+-            audio_track->set_codec_id("A_PCM/INT/LIT");
+-            audio_track->set_bit_depth(16);
+-            audio_track->set_sample_rate(static_cast<double>(audio->sample_rate));
+-            audio_track->set_channels(audio->channels);
++            audio_track->set_codec_id("A_OPUS");
++            audio_track->set_sample_rate(static_cast<double>(kOpusSampleRate));
++            audio_track->set_channels(opus_audio.channels);
++            const std::vector<uint8_t> opus_head = build_opus_head(opus_audio.channels, opus_audio.pre_skip_ns);
++            if (!audio_track->SetCodecPrivate(opus_head.data(), static_cast<uint64_t>(opus_head.size()))) {
++                fprintf(stderr, "Error: Failed to set OpusHead codec private.\n");
++                return -1;
++            }
++            audio_track->set_codec_delay(static_cast<uint64_t>(opus_audio.pre_skip_ns));
++            // The Matroska spec mandates an 80 ms SeekPreRoll for Opus tracks.
++            audio_track->set_seek_pre_roll(80000000ull);
+         }
+         segment.GetSegmentInfo()->set_writing_app("stable-diffusion.cpp");
+         segment.GetSegmentInfo()->set_muxing_app("stable-diffusion.cpp");
+@@ -1291,7 +1412,8 @@ std::vector<uint8_t> create_webm_from_sd_images_to_vector(sd_image_t* images, in
+ 
+         const uint64_t frame_duration_ns = std::max<uint64_t>(
+             1, static_cast<uint64_t>(std::llround(1000000000.0 / static_cast<double>(fps))));
+-        uint64_t timestamp_ns = 0;
++        uint64_t timestamp_ns     = 0;
++        size_t opus_packet_index = 0;
+ 
+         for (int i = 0; i < num_images; ++i) {
+             const sd_image_t& image = images[i];
+@@ -1316,19 +1438,21 @@ std::vector<uint8_t> create_webm_from_sd_images_to_vector(sd_image_t* images, in
+             }
+ 
+             if (audio_track_number != 0) {
+-                auto [audio_begin, audio_end] = audio_sample_range_for_video_frame(audio, i, num_images, fps);
+-                const uint64_t frame_samples  = audio_end - audio_begin;
+-                if (frame_samples > 0) {
+-                    const uint64_t frame_bytes = frame_samples * audio->channels * sizeof(int16_t);
+-                    const uint8_t* frame_ptr   = audio_pcm.data() + audio_begin * audio->channels * sizeof(int16_t);
+-                    if (!segment.AddFrame(frame_ptr,
+-                                          frame_bytes,
++                // Drain every 20 ms Opus packet that starts within this video
++                // frame's time range. Packet timestamps are exact; CodecDelay
++                // accounts for the encoder lookahead.
++                while (opus_packet_index < opus_audio.packets.size()
++                       && static_cast<uint64_t>(opus_packet_index) * kOpusFrameNs < timestamp_ns + frame_duration_ns) {
++                    const std::vector<uint8_t>& packet = opus_audio.packets[opus_packet_index];
++                    if (!segment.AddFrame(packet.data(),
++                                          static_cast<uint64_t>(packet.size()),
+                                           audio_track_number,
+-                                          timestamp_ns,
++                                          static_cast<uint64_t>(opus_packet_index) * kOpusFrameNs,
+                                           true)) {
+-                        fprintf(stderr, "Error: Failed to mux audio chunk %d into WebM.\n", i);
++                        fprintf(stderr, "Error: Failed to mux audio chunk %zu into WebM.\n", opus_packet_index);
+                         return -1;
+                     }
++                    ++opus_packet_index;
+                 }
+             }
+ 
+diff --git a/examples/server/CMakeLists.txt b/examples/server/CMakeLists.txt
+index 302a8d6..8a1329d 100644
+--- a/examples/server/CMakeLists.txt
++++ b/examples/server/CMakeLists.txt
+@@ -96,7 +96,7 @@ if(SD_WEBP)
+ endif()
+ if(SD_WEBM)
+     target_compile_definitions(${TARGET} PRIVATE SD_USE_WEBM)
+-    target_link_libraries(${TARGET} PRIVATE webm)
++    target_link_libraries(${TARGET} PRIVATE webm opus)
+ endif()
+ 
+ # due to httplib; it contains a pragma for MSVC, but other things need explicit flags

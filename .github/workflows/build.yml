@@ -107,7 +107,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -199,7 +199,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -310,7 +310,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Install CUDA Toolkit
         id: cuda-toolkit
@@ -410,7 +410,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -513,7 +513,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -619,7 +619,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
@@ -931,7 +931,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -1061,7 +1061,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Cache ROCm Installation
         id: cache-rocm
@@ -1159,7 +1159,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -1291,7 +1291,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -1450,7 +1450,7 @@ jobs:
       # patched code, this step must fail loudly instead of silently shipping
       # binaries without the patch.
       - name: Apply patches
-        run: git apply --verbose ci/patches/0001-sd-server-cancel-generating.patch
+        run: git apply --verbose ci/patches/*.patch
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
