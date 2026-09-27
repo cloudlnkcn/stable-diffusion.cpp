@@ -1,0 +1,330 @@
+diff --git a/examples/common/common.cpp b/examples/common/common.cpp
+index dc15b4e..8e8cee6 100644
+--- a/examples/common/common.cpp
++++ b/examples/common/common.cpp
+@@ -1922,6 +1922,121 @@ static bool parse_image_array_json_field(const json& parent,
+     return true;
+ }
+ 
++// Decode a base64 (or data-URL) encoded RIFF/WAVE payload into an owned
++// audio buffer. Mirrors decode_base64_image for audio reference inputs.
++static bool decode_base64_audio(const std::string& encoded_input, SDAudioOwner& out_audio) {
++    std::string encoded = encoded_input;
++    auto comma_pos      = encoded.find(',');
++    if (comma_pos != std::string::npos) {
++        encoded = encoded.substr(comma_pos + 1);
++    }
++
++    std::vector<uint8_t> wav_bytes = decode_base64_bytes(encoded);
++    if (wav_bytes.empty()) {
++        return false;
++    }
++
++    std::vector<float> samples;
++    uint32_t sample_rate = 0;
++    uint32_t channels    = 0;
++    if (!load_wav_from_memory(wav_bytes.data(), wav_bytes.size(), samples, sample_rate, channels)) {
++        return false;
++    }
++    out_audio.reset(std::move(samples), sample_rate, channels);
++    return true;
++}
++
++static bool parse_audio_array_json_field(const json& parent,
++                                         const char* key,
++                                         std::vector<SDAudioOwner>& out_audios) {
++    if (!parent.contains(key)) {
++        return true;
++    }
++    if (parent.at(key).is_null()) {
++        out_audios.clear();
++        return true;
++    }
++    if (!parent.at(key).is_array()) {
++        return false;
++    }
++
++    out_audios.clear();
++    for (const auto& item : parent.at(key)) {
++        if (!item.is_string()) {
++            return false;
++        }
++        SDAudioOwner audio;
++        if (!decode_base64_audio(item.get<std::string>(), audio)) {
++            return false;
++        }
++        out_audios.push_back(std::move(audio));
++    }
++    return true;
++}
++
++// Reference videos arrive as an array of objects:
++//   { "frames": ["<base64 image>", ...], "fps": 24, "audio": "<base64 wav>" }
++// frames is required; fps defaults to 24 and audio (a soundtrack paired with
++// this reference video) is optional.
++static bool parse_ref_videos_json_field(const json& parent,
++                                        const char* key,
++                                        std::vector<std::vector<SDImageOwner>>& out_videos,
++                                        std::vector<int>& out_fps,
++                                        std::vector<SDAudioOwner>& out_audios) {
++    if (!parent.contains(key)) {
++        return true;
++    }
++    if (parent.at(key).is_null()) {
++        out_videos.clear();
++        out_fps.clear();
++        out_audios.clear();
++        return true;
++    }
++    if (!parent.at(key).is_array()) {
++        return false;
++    }
++
++    out_videos.clear();
++    out_fps.clear();
++    out_audios.clear();
++    for (const auto& item : parent.at(key)) {
++        if (!item.is_object() || !item.contains("frames") || !item.at("frames").is_array()
++                || item.at("frames").empty()) {
++            return false;
++        }
++        std::vector<SDImageOwner> frames;
++        for (const auto& frame : item.at("frames")) {
++            if (!frame.is_string()) {
++                return false;
++            }
++            SDImageOwner image;
++            if (!decode_base64_image(frame.get<std::string>(), 0, 0, 0, image)) {
++                return false;
++            }
++            frames.push_back(std::move(image));
++        }
++        out_videos.push_back(std::move(frames));
++
++        int fps = 24;
++        if (item.contains("fps")) {
++            if (!item.at("fps").is_number_integer() || item.at("fps").get<int>() <= 0) {
++                return false;
++            }
++            fps = item.at("fps").get<int>();
++        }
++        out_fps.push_back(fps);
++
++        SDAudioOwner audio;
++        if (item.contains("audio") && item.at("audio").is_string()) {
++            if (!decode_base64_audio(item.at("audio").get<std::string>(), audio)) {
++                return false;
++            }
++        }
++        out_audios.push_back(std::move(audio));
++    }
++    return true;
++}
++
+ static bool parse_lora_json_field(const json& parent,
+                                   const std::function<std::string(const std::string&)>& lora_path_resolver,
+                                   std::map<std::string, float>& lora_map,
+@@ -2267,6 +2382,11 @@ bool SDGenerationParams::from_json_str(
+         LOG_ERROR("invalid input image array");
+         return false;
+     }
++    if (!parse_audio_array_json_field(j, "ref_audios", ref_audios) ||
++        !parse_ref_videos_json_field(j, "ref_videos", ref_videos, ref_video_fps, ref_video_audios)) {
++        LOG_ERROR("invalid reference video/audio input");
++        return false;
++    }
+ 
+     return true;
+ }
+@@ -2508,6 +2628,11 @@ bool SDGenerationParams::resolve(const std::string& lora_model_dir, const std::s
+ }
+ 
+ bool SDGenerationParams::validate(SDMode mode) {
++    if (mode == VID_GEN && (!ref_audios.empty() || !ref_videos.empty()) &&
++        (init_image.get().data != nullptr || end_image.get().data != nullptr)) {
++        LOG_ERROR("error: ref_videos/ref_audios cannot be combined with init_image/end_image");
++        return false;
++    }
+     if (!image_preprocess.empty() && mode != IMG_GEN && mode != VID_GEN) {
+         LOG_ERROR("--image-preprocess requires img_gen or vid_gen mode");
+         return false;
+@@ -2774,9 +2899,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
+             frame_views.push_back(frame.get());
+         }
+         sd_audio_t audio = i < ref_video_audios.size() ? ref_video_audios[i].get() : sd_audio_t{};
++        const int fps     = i < ref_video_fps.size() ? ref_video_fps[i] : 24;
+         ref_video_views.push_back({frame_views.empty() ? nullptr : frame_views.data(),
+                                    static_cast<int>(frame_views.size()),
+-                                   24,
++                                   fps,
+                                    audio});
+     }
+ 
+diff --git a/examples/common/common.h b/examples/common/common.h
+index d0d39b7..21b7de1 100644
+--- a/examples/common/common.h
++++ b/examples/common/common.h
+@@ -287,6 +287,7 @@ struct SDGenerationParams {
+     SDImageOwner end_image;
+     std::vector<SDImageOwner> ref_images;
+     std::vector<std::vector<SDImageOwner>> ref_videos;
++    std::vector<int> ref_video_fps;
+     std::vector<SDAudioOwner> ref_video_audios;
+     std::vector<SDAudioOwner> ref_audios;
+     SDImageOwner mask_image;
+diff --git a/examples/common/media_io.cpp b/examples/common/media_io.cpp
+index 54947f1..19d5c00 100644
+--- a/examples/common/media_io.cpp
++++ b/examples/common/media_io.cpp
+@@ -10,6 +10,7 @@
+ #include <cstring>
+ #include <filesystem>
+ #include <fstream>
++#include <iterator>
+ #include <string>
+ #include <vector>
+ 
+@@ -1595,62 +1596,69 @@ bool load_wav_from_file(const std::string& path,
+                         std::vector<float>& interleaved_samples,
+                         uint32_t& sample_rate,
+                         uint32_t& channels) {
++    std::ifstream file(path, std::ios::binary);
++    if (!file) {
++        interleaved_samples.clear();
++        sample_rate = 0;
++        channels    = 0;
++        return false;
++    }
++    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
++    return load_wav_from_memory(bytes.data(), bytes.size(), interleaved_samples, sample_rate, channels);
++}
++
++bool load_wav_from_memory(const uint8_t* wav_data,
++                          size_t wav_size,
++                          std::vector<float>& interleaved_samples,
++                          uint32_t& sample_rate,
++                          uint32_t& channels) {
+     interleaved_samples.clear();
+     sample_rate = 0;
+     channels    = 0;
+ 
+-    std::ifstream file(path, std::ios::binary);
+-    uint8_t riff_header[12];
+-    if (!file.read(reinterpret_cast<char*>(riff_header), sizeof(riff_header)) ||
+-        std::memcmp(riff_header, "RIFF", 4) != 0 ||
+-        std::memcmp(riff_header + 8, "WAVE", 4) != 0) {
++    if (wav_data == nullptr || wav_size < 12 ||
++        std::memcmp(wav_data, "RIFF", 4) != 0 ||
++        std::memcmp(wav_data + 8, "WAVE", 4) != 0) {
+         return false;
+     }
+ 
++    size_t file_pos = 12;  // past the RIFF header
++
+     uint16_t audio_format    = 0;
+     uint16_t bits_per_sample = 0;
+     uint16_t block_align     = 0;
+-    std::streampos data_pos  = std::streampos(-1);
++    uint64_t data_pos        = static_cast<uint64_t>(-1);
+     uint32_t data_size       = 0;
+ 
+-    while (file.good()) {
+-        uint8_t chunk_header[8];
+-        if (!file.read(reinterpret_cast<char*>(chunk_header), sizeof(chunk_header))) {
+-            break;
+-        }
+-        uint32_t chunk_size           = read_le32(chunk_header + 4);
+-        std::streampos chunk_data_pos = file.tellg();
++    while (file_pos + 8 <= wav_size) {
++        const uint8_t* chunk_header = wav_data + file_pos;
++        const uint32_t chunk_size   = read_le32(chunk_header + 4);
++        const size_t chunk_data_pos = file_pos + 8;
++        size_t advance              = chunk_data_pos + chunk_size;
+ 
+         if (std::memcmp(chunk_header, "fmt ", 4) == 0) {
+-            if (chunk_size < 16) {
+-                return false;
+-            }
+-            std::vector<uint8_t> fmt(chunk_size);
+-            if (!file.read(reinterpret_cast<char*>(fmt.data()), chunk_size)) {
++            if (chunk_size < 16 || chunk_data_pos + chunk_size > wav_size) {
+                 return false;
+             }
+-            audio_format    = read_le16(fmt.data());
+-            channels        = read_le16(fmt.data() + 2);
+-            sample_rate     = read_le32(fmt.data() + 4);
+-            block_align     = read_le16(fmt.data() + 12);
+-            bits_per_sample = read_le16(fmt.data() + 14);
++            const uint8_t* fmt = wav_data + chunk_data_pos;
++            audio_format       = read_le16(fmt);
++            channels           = read_le16(fmt + 2);
++            sample_rate        = read_le32(fmt + 4);
++            block_align        = read_le16(fmt + 12);
++            bits_per_sample    = read_le16(fmt + 14);
+             if (audio_format == 0xfffe && chunk_size >= 40) {
+-                audio_format = read_le16(fmt.data() + 24);
++                audio_format = read_le16(fmt + 24);
+             }
+         } else if (std::memcmp(chunk_header, "data", 4) == 0) {
+-            data_pos  = chunk_data_pos;
++            data_pos  = static_cast<uint64_t>(chunk_data_pos);
+             data_size = chunk_size;
+-            file.seekg(chunk_size, std::ios::cur);
+-        } else {
+-            file.seekg(chunk_size, std::ios::cur);
+         }
+ 
+-        if (!file.good()) {
++        if (advance > wav_size) {
+             break;
+         }
+-        if ((chunk_size & 1) != 0) {
+-            file.seekg(1, std::ios::cur);
+-        }
++        // Chunks are word-aligned in RIFF/WAVE.
++        file_pos = advance + (chunk_size & 1);
+     }
+ 
+     const uint32_t bytes_per_sample = (bits_per_sample + 7) / 8;
+@@ -1661,19 +1669,15 @@ bool load_wav_from_file(const std::string& path,
+     }
+ 
+     const uint64_t frame_count = data_size / block_align;
+-    if (frame_count == 0 || frame_count > SIZE_MAX / channels) {
+-        return false;
+-    }
+-    std::vector<uint8_t> pcm(data_size);
+-    file.clear();
+-    file.seekg(data_pos);
+-    if (!file.read(reinterpret_cast<char*>(pcm.data()), data_size)) {
++    if (frame_count == 0 || frame_count > SIZE_MAX / channels ||
++        data_pos == static_cast<uint64_t>(-1) || static_cast<uint64_t>(data_pos) + data_size > wav_size) {
+         return false;
+     }
++    const uint8_t* pcm = wav_data + data_pos;
+ 
+     interleaved_samples.resize(static_cast<size_t>(frame_count * channels));
+     for (uint64_t frame = 0; frame < frame_count; ++frame) {
+-        const uint8_t* frame_data = pcm.data() + frame * block_align;
++        const uint8_t* frame_data = pcm + frame * block_align;
+         for (uint32_t channel = 0; channel < channels; ++channel) {
+             const uint8_t* sample_data = frame_data + channel * bytes_per_sample;
+             float sample               = 0.0f;
+diff --git a/examples/common/media_io.h b/examples/common/media_io.h
+index b2b56ec..d80199f 100644
+--- a/examples/common/media_io.h
++++ b/examples/common/media_io.h
+@@ -125,4 +125,13 @@ bool load_wav_from_file(const std::string& path,
+                         uint32_t& sample_rate,
+                         uint32_t& channels);
+ 
++// Decode an in-memory RIFF/WAVE byte stream (PCM 8/16/24/32-bit integer or
++// 32/64-bit float). Used by the sd-server JSON layer to decode base64
++// reference audio payloads.
++bool load_wav_from_memory(const uint8_t* data,
++                          size_t size,
++                          std::vector<float>& interleaved_samples,
++                          uint32_t& sample_rate,
++                          uint32_t& channels);
++
+ #endif  // __MEDIA_IO_H__
